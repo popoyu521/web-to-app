@@ -1,108 +1,87 @@
-name: Build Web-to-APK
+name: Build Android APK
 
 on:
   push:
-    branches: [ main ]
-    tags:
-      - 'v*'
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
-
-env:
-  ANDROID_COMPILE_SDK: "34"
-  ANDROID_BUILD_TOOLS: "34.0.0"
-  ANDROID_SDK_TOOLS: "11076708"
 
 jobs:
   build:
-    name: Build Android APK
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup Java
+    - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
-        distribution: 'temurin'
         java-version: '17'
+        distribution: 'temurin'
 
     - name: Setup Android SDK
-      run: |
-        # 下载 Android SDK
-        wget -q https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_SDK_TOOLS}_latest.zip -O cmdline-tools.zip
-        mkdir -p android-sdk/cmdline-tools
-        unzip -q cmdline-tools.zip -d android-sdk/cmdline-tools
-        mv android-sdk/cmdline-tools/cmdline-tools android-sdk/cmdline-tools/latest
-        
-        # 设置环境变量
-        echo "ANDROID_SDK_ROOT=$GITHUB_WORKSPACE/android-sdk" >> $GITHUB_ENV
-        echo "$GITHUB_WORKSPACE/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-        echo "$GITHUB_WORKSPACE/android-sdk/platform-tools" >> $GITHUB_PATH
-        
-        # 接受 licenses
-        yes | sdkmanager --licenses || true
-        
-        # 安装必要的组件
-        sdkmanager "platform-tools" "platforms;android-$ANDROID_COMPILE_SDK" "build-tools;$ANDROID_BUILD_TOOLS"
-        sdkmanager "extras;android;m2repository"
-
-    - name: Make gradlew executable
-      run: chmod +x gradlew
-
-    - name: Cache Gradle dependencies
-      uses: actions/cache@v4
+      id: setup-android
+      uses: android-actions/setup-android@v2
       with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-          .gradle
-        key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          gradle-
+        cmdline-tools-version: 'latest'
+        build-tools-version: '34.0.0'
+        platform-version: '34'
+        extra-sdkmanager-args: ''
 
-    - name: Build Release APK
-      run: |
-        ./gradlew clean
-        ./gradlew assembleRelease --no-daemon --stacktrace
+    - name: Grant execute permission for gradlew
+      run: chmod +x ./gradlew
 
-    - name: Verify APK exists
+    - name: Build APK
       run: |
-        # 检查常见的 APK 输出路径
-        if [ -f "app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
-          echo "Found unsigned APK"
-          mv app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/app-release.apk
-        elif [ -f "app/build/outputs/apk/release/app-release.apk" ]; then
-          echo "Found release APK"
+        # 检查gradlew是否存在
+        if [ -f "./gradlew" ]; then
+          echo "Found gradlew, building APK..."
+          ./gradlew clean
+          ./gradlew assembleDebug
         else
-          echo "Checking for APK in other locations..."
-          find . -name "*.apk" -type f -exec echo "Found: {}" \;
-          # 将找到的第一个 APK 重命名为标准名称
-          APK_FILE=$(find . -name "*.apk" -type f | head -1)
-          if [ -n "$APK_FILE" ]; then
-            echo "Using APK: $APK_FILE"
-            mkdir -p app/build/outputs/apk/release/
-            cp "$APK_FILE" app/build/outputs/apk/release/app-release.apk
+          echo "gradlew not found, checking for gradle wrapper..."
+          # 尝试使用gradle wrapper
+          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Found gradle wrapper, trying to build..."
+            gradle clean
+            gradle assembleDebug
           else
-            echo "ERROR: No APK file found!"
+            echo "No build system found. Please check your project structure."
             exit 1
           fi
         fi
 
-    - name: Upload APK as artifact
+    - name: Find and list APK files
+      run: |
+        echo "Searching for APK files..."
+        find . -name "*.apk" -type f 2>/dev/null | while read file; do
+          echo "Found APK: $file"
+          ls -lh "$file"
+        done
+        
+        # 统计找到的APK数量
+        APK_COUNT=$(find . -name "*.apk" -type f 2>/dev/null | wc -l)
+        if [ $APK_COUNT -eq 0 ]; then
+          echo "ERROR: No APK files found!"
+          echo "Listing build directory structure..."
+          find . -name "build" -type d | while read dir; do
+            echo "Checking $dir:"
+            find "$dir" -name "*.apk" -type f 2>/dev/null || echo "No APK in $dir"
+          done
+          exit 1
+        else
+          echo "Found $APK_COUNT APK file(s)"
+        fi
+
+    - name: Upload APK artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Web-to-App-APK
-        path: app/build/outputs/apk/release/app-release.apk
+        name: web-to-app-apk
+        path: |
+          **/*.apk
+          !**/*-unaligned.apk
+          !**/*-test.apk
         if-no-files-found: error
         retention-days: 7
-        compression-level: 0  # 不压缩，因为 APK 已经是压缩格式
-
-    - name: Create Release (仅 tag 触发时)
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: app/build/outputs/apk/release/app-release.apk
-        generate_release_notes: true
