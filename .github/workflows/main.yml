@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Android CI
 
 on:
   push:
@@ -12,8 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -22,66 +21,58 @@ jobs:
         distribution: 'temurin'
 
     - name: Setup Android SDK
-      id: setup-android
-      uses: android-actions/setup-android@v2
-      with:
-        cmdline-tools-version: 'latest'
-        build-tools-version: '34.0.0'
-        platform-version: '34'
-        extra-sdkmanager-args: ''
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x ./gradlew
-
-    - name: Build APK
       run: |
-        # 检查gradlew是否存在
-        if [ -f "./gradlew" ]; then
-          echo "Found gradlew, building APK..."
-          ./gradlew clean
-          ./gradlew assembleDebug
-        else
-          echo "gradlew not found, checking for gradle wrapper..."
-          # 尝试使用gradle wrapper
-          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "Found gradle wrapper, trying to build..."
-            gradle clean
-            gradle assembleDebug
-          else
-            echo "No build system found. Please check your project structure."
-            exit 1
-          fi
-        fi
-
-    - name: Find and list APK files
-      run: |
-        echo "Searching for APK files..."
-        find . -name "*.apk" -type f 2>/dev/null | while read file; do
-          echo "Found APK: $file"
-          ls -lh "$file"
-        done
+        # 安装 Android SDK 命令行工具
+        mkdir -p $HOME/.android
+        touch $HOME/.android/repositories.cfg
         
-        # 统计找到的APK数量
-        APK_COUNT=$(find . -name "*.apk" -type f 2>/dev/null | wc -l)
-        if [ $APK_COUNT -eq 0 ]; then
-          echo "ERROR: No APK files found!"
-          echo "Listing build directory structure..."
-          find . -name "build" -type d | while read dir; do
-            echo "Checking $dir:"
-            find "$dir" -name "*.apk" -type f 2>/dev/null || echo "No APK in $dir"
-          done
-          exit 1
+        # 下载命令行工具
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+        mkdir -p $HOME/android-sdk/cmdline-tools
+        unzip -q cmdline-tools.zip -d $HOME/android-sdk/cmdline-tools
+        mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest
+        
+        # 设置环境变量
+        echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+        echo "PATH=$HOME/android-sdk/cmdline-tools/latest/bin:$HOME/android-sdk/platform-tools:$PATH" >> $GITHUB_ENV
+
+    - name: Accept Android licenses
+      run: |
+        yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+    - name: Install Android platform and build tools
+      run: |
+        $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+    - name: Validate Gradle wrapper
+      uses: gradle/wrapper-validation-action@v2
+
+    - name: Make gradlew executable
+      run: chmod +x gradlew || echo "gradlew not found, will try gradle command"
+
+    - name: Build with Gradle
+      run: |
+        # 尝试不同的构建命令
+        if [ -f "./gradlew" ]; then
+          ./gradlew clean assembleDebug
+        elif [ -f "gradlew.bat" ]; then
+          echo "Windows gradlew found, trying to run with bash..."
+          bash gradlew.bat clean assembleDebug
+        elif command -v gradle &> /dev/null; then
+          echo "Using system gradle..."
+          gradle clean assembleDebug
         else
-          echo "Found $APK_COUNT APK file(s)"
+          echo "ERROR: No gradle available"
+          exit 1
         fi
 
-    - name: Upload APK artifact
+    - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: web-to-app-apk
+        name: android-apk
         path: |
-          **/*.apk
-          !**/*-unaligned.apk
-          !**/*-test.apk
+          app/build/outputs/apk/**/*.apk
+          */build/outputs/apk/**/*.apk
+          **/build/outputs/apk/**/*.apk
         if-no-files-found: error
         retention-days: 7
