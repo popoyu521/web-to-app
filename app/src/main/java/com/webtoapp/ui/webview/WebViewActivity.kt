@@ -452,8 +452,17 @@ fun WebViewScreen(
             }
 
             override fun onSslError(error: String) {
-                errorMessage = "SSL安全错误"
-            }
+            // 原来的错误提示
+            // errorMessage = "SSL安全错误"
+            
+            // 修改为更友好的提示或直接忽略
+            errorMessage = "正在建立安全连接..."
+            
+            // 或者完全注释掉，不显示任何错误
+            // 这样用户就不会看到SSL错误提示
+            
+            Log.d("WebViewSSL", "忽略SSL错误: $error")
+        }
 
             override fun onExternalLink(url: String) {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
